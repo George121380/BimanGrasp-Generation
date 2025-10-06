@@ -27,6 +27,7 @@ from torch.multiprocessing import set_start_method
 import plotly.graph_objects as go
 from utils.common import Logger
 from utils.config import ExperimentConfig, create_config_from_args
+from utils.visualization_recorder import FrameRecorder
 from utils.bimanual_handler import (
     BimanualPair, hand_pose_to_dict, save_grasp_results, EnergyTerms
 )
@@ -157,6 +158,28 @@ class GraspExperiment:
         )
         
         results_path = self.config.paths.get_experiment_results_path(self.config.name)
+
+        # Initialize visualization recorder if enabled
+        recorders = []
+        if getattr(self.config, 'vis', None) and self.config.vis.enabled:
+            # Support multiple recordings in a single batch
+            n_record = max(1, int(self.config.vis.record_num))
+            base_local = int(self.config.vis.sample_local_index)
+            for k in range(n_record):
+                global_idx = self.config.vis.sample_object_index * self.object_model.batch_size_each + (base_local + k)
+                frames_dir = os.path.join(results_path, f"{self.config.vis.out_dirname}_{k}")
+                recorder = FrameRecorder(
+                    object_model=self.object_model,
+                    bimanual_pair=self.bimanual_pair,
+                    global_idx=global_idx,
+                    frames_dir=frames_dir,
+                    width=self.config.vis.width,
+                    height=self.config.vis.height,
+                    show_contacts=self.config.vis.show_contacts,
+                    bg_color=self.config.vis.bg_color
+                )
+                recorder.capture(step=0)
+                recorders.append((k, recorder))
         
         # Main optimization loop
         for step in tqdm(range(1, self.config.optimizer.num_iterations + 1), desc='optimizing'):
@@ -192,8 +215,28 @@ class GraspExperiment:
                     energy_terms.penetration, energy_terms.self_penetration,
                     energy_terms.joint_limits, step, show=False
                 )
+
+            # Visualization capture per stride
+            if recorders and (step % max(1, self.config.vis.frame_stride) == 0):
+                for k, rec in recorders:
+                    try:
+                        rec.capture(step)
+                    except Exception as e:
+                        print(f"[WARN] Visualization capture failed at step {step} for recorder {k}: {e}")
         
         self.profiler.disable()
+
+        # Finalize videos if enabled
+        if recorders:
+            for k, rec in recorders:
+                try:
+                    base, ext = os.path.splitext(self.config.vis.video_filename)
+                    video_name = f"{base}_{k}{ext or '.mp4'}"
+                    video_path = os.path.join(results_path, video_name)
+                    rec.finalize(video_path, fps=self.config.vis.fps)
+                    print(f"Saved optimization video to: {video_path}")
+                except Exception as e:
+                    print(f"[WARN] Visualization finalize failed for recorder {k}: {e}")
         return energy_terms
     
     def save_intermediate_results(self, step: int, energy_terms: EnergyTerms):
@@ -266,15 +309,32 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', default="0", type=str)
     
     # Object and batch configuration
-    parser.add_argument('--object_code_list', default=[
-        'Cole_Hardware_Dishtowel_Multicolors',
-        'Curver_Storage_Bin_Black_Small', 
-        'Hasbro_Monopoly_Hotels_Game',
-        'Breyer_Horse_Of_The_Year_2015',
-        'Schleich_S_Bayala_Unicorn_70432'
-    ], type=list, help='List of object codes to process')
-    parser.add_argument('--batch_size', default=32, type=int, help='Batch size per object')
+    parser.add_argument('--object_code_list', default=
+    [
+        # 'Cole_Hardware_Dishtowel_Multicolors',
+        # 'Curver_Storage_Bin_Black_Small', 
+        # 'Hasbro_Monopoly_Hotels_Game',
+        # 'Breyer_Horse_Of_The_Year_2015',
+        # 'Schleich_S_Bayala_Unicorn_70432',
+        # '11pro_SL_TRX_FG'
+        'pot_rec'
+    ]
+    , type=list, help='List of object codes to process')
+    
+    parser.add_argument('--batch_size', default=128, type=int, help='Batch size per object')
     parser.add_argument('--num_iterations', default=10000, type=int, help='Number of optimization iterations')
+    parser.add_argument('--object_code', default=None, type=str, help='Single object code to override list')
+    
+    # Visualization CLI
+    parser.add_argument('--vis', action='store_true')
+    parser.add_argument('--vis_frame_stride', default=50, type=int)
+    parser.add_argument('--vis_obj', default=0, type=int)
+    parser.add_argument('--vis_local', default=0, type=int)
+    parser.add_argument('--vis_fps', default=30, type=int)
+    parser.add_argument('--vis_width', default=900, type=int)
+    parser.add_argument('--vis_height', default=900, type=int)
+    parser.add_argument('--vis_contacts', action='store_true')
+    parser.add_argument('--vis_record_num', default=1, type=int)
     
     
     args = parser.parse_args()
@@ -286,6 +346,10 @@ if __name__ == '__main__':
         config.update_from_args(args)
     else:
         config = create_config_from_args(args)
+
+    # Optional: override object list with single code
+    if getattr(args, 'object_code', None):
+        config.object_code_list = [args.object_code]
     
     # Print configuration summary
     print("=== Experiment Configuration ===")

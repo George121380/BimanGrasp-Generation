@@ -153,6 +153,23 @@ class ModelConfig:
 
 
 @dataclass
+class VisConfig:
+    """Visualization/recording configuration for optimization video."""
+    enabled: bool = False
+    sample_object_index: int = 0
+    sample_local_index: int = 0
+    record_num: int = 1
+    frame_stride: int = 50
+    fps: int = 30
+    width: int = 900
+    height: int = 900
+    out_dirname: str = 'frames'
+    video_filename: str = 'optimization.mp4'
+    show_contacts: bool = False
+    bg_color: str = '#E2F0D9'
+
+
+@dataclass
 class ExperimentConfig:
     """Complete experiment configuration."""
     
@@ -176,6 +193,7 @@ class ExperimentConfig:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     initialization: InitializationConfig = field(default_factory=InitializationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    vis: VisConfig = field(default_factory=VisConfig)
     
     # Derived properties
     @property
@@ -228,6 +246,22 @@ class ExperimentConfig:
         for attr in thresh_attrs:
             if hasattr(args, attr):
                 setattr(self.energy, attr, getattr(args, attr))
+
+        # Update visualization parameters (if provided)
+        vis_map = {
+            'vis': 'enabled',
+            'vis_frame_stride': 'frame_stride',
+            'vis_obj': 'sample_object_index',
+            'vis_local': 'sample_local_index',
+            'vis_record_num': 'record_num',
+            'vis_fps': 'fps',
+            'vis_width': 'width',
+            'vis_height': 'height',
+            'vis_contacts': 'show_contacts'
+        }
+        for cli_name, field_name in vis_map.items():
+            if hasattr(args, cli_name):
+                setattr(self.vis, field_name, getattr(args, cli_name))
 
 
 DEFAULT_CONFIG = ExperimentConfig()
