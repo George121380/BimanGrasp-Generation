@@ -134,6 +134,21 @@ class InitializationConfig:
     # Contact points
     num_contacts: int = 4                # Number of contact points per hand
 
+    # Target-based initialization (optional)
+    init_at_targets: bool = False        # Enable target-based init
+    left_target: Optional[str] = None    # "x y z" in object coords
+    right_target: Optional[str] = None   # "x y z" in object coords
+    target_distance: float = 0.22        # Back-off distance from target along approach dir
+    target_jitter_dist: float = 0.0      # +/- distance jitter
+    target_jitter_angle: float = 0.0     # cone half-angle (radians) around approach dir
+    target_twist_range: float = 0.0      # random twist around approach axis in [-range, +range] (radians)
+    twist_mirror: bool = False           # if True, right hand uses -phi instead of phi
+    right_twist_offset: float = 0.0      # constant additional offset added to right-hand twist
+    # Interactive selection
+    interact: bool = False               # launch interactive UI to select A/B
+    snap_to_surface: bool = False        # snap sphere to nearest surface
+    ui_port: int = 8050                  # dash server port (if used)
+
 
 @dataclass
 class ModelConfig:
@@ -170,6 +185,13 @@ class VisConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Minimal metrics recording configuration."""
+    enabled: bool = False
+    stride: int = 50
+
+
+@dataclass
 class ExperimentConfig:
     """Complete experiment configuration."""
     
@@ -194,6 +216,7 @@ class ExperimentConfig:
     initialization: InitializationConfig = field(default_factory=InitializationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     vis: VisConfig = field(default_factory=VisConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     
     # Derived properties
     @property
@@ -230,7 +253,9 @@ class ExperimentConfig:
                 
         # Update initialization parameters
         init_attrs = ['distance_lower', 'distance_upper', 'theta_lower', 'theta_upper', 
-                     'jitter_strength', 'num_contacts']
+                     'jitter_strength', 'num_contacts', 'init_at_targets', 'left_target',
+                     'right_target', 'target_distance', 'target_jitter_dist', 'target_jitter_angle',
+                     'target_twist_range', 'twist_mirror', 'right_twist_offset', 'interact', 'snap_to_surface', 'ui_port']
         for attr in init_attrs:
             if hasattr(args, attr):
                 setattr(self.initialization, attr, getattr(args, attr))
@@ -262,6 +287,12 @@ class ExperimentConfig:
         for cli_name, field_name in vis_map.items():
             if hasattr(args, cli_name):
                 setattr(self.vis, field_name, getattr(args, cli_name))
+
+        # Metrics CLI mapping
+        if hasattr(args, 'metrics'):
+            self.metrics.enabled = getattr(args, 'metrics')
+        if hasattr(args, 'metrics_stride') and getattr(args, 'metrics_stride') is not None:
+            self.metrics.stride = int(getattr(args, 'metrics_stride'))
 
 
 DEFAULT_CONFIG = ExperimentConfig()

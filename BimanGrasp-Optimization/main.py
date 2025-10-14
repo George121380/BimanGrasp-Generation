@@ -16,10 +16,11 @@ import torch
 from tqdm import tqdm
 import random
 import transforms3d
+import math
 import shutil
 from utils.hand_model import HandModel
 from utils.object_model import ObjectModel
-from utils.initializations import initialize_dual_hand
+from utils.initializations import initialize_dual_hand, initialize_dual_hand_at_targets
 from utils.bimanual_energy import calculate_energy, cal_energy, BimanualEnergyComputer
 from utils.bimanual_optimizer import MALAOptimizer
 from utils.common import robust_compute_rotation_matrix_from_ortho6d
@@ -28,6 +29,8 @@ import plotly.graph_objects as go
 from utils.common import Logger
 from utils.config import ExperimentConfig, create_config_from_args
 from utils.visualization_recorder import FrameRecorder
+from utils.metrics_recorder import SimpleMetricsRecorder
+from utils.interactive_select import select_two_points_interactive, select_two_points_interactive_from_disk
 from utils.bimanual_handler import (
     BimanualPair, hand_pose_to_dict, save_grasp_results, EnergyTerms
 )
@@ -88,10 +91,33 @@ class GraspExperiment:
         )
         self.object_model.initialize(self.config.object_code_list)
         
-        # Initialize dual hands
-        left_hand_model, right_hand_model = initialize_dual_hand(
-            right_hand_model, self.object_model, self.config.initialization
-        )
+        # Initialize dual hands (support target-based init & interactive selection)
+        if getattr(self.config.initialization, 'interact', False):
+            results_path = self.config.paths.get_experiment_results_path(self.config.name)
+            try:
+                A_scaled, B_scaled, preview = select_two_points_interactive(self.object_model, self.config.initialization, results_path)
+            except Exception:
+                # fallback without ObjectModel (e.g., missing deps in env)
+                A_scaled, B_scaled, preview = select_two_points_interactive_from_disk(self.config.paths, self.config.object_code_list[0], self.config.initialization, results_path)
+            # Inject into initialization config and enable target-based init
+            self.config.initialization.left_target = f"{A_scaled[0]} {A_scaled[1]} {A_scaled[2]}"
+            self.config.initialization.right_target = f"{B_scaled[0]} {B_scaled[1]} {B_scaled[2]}"
+            self.config.initialization.init_at_targets = True
+            # Default symmetry for interact mode: mirror + pi offset (keeps fingertip symmetry)
+            if not getattr(self.config.initialization, 'twist_mirror', False):
+                self.config.initialization.twist_mirror = True
+            if float(getattr(self.config.initialization, 'right_twist_offset', 0.0)) == 0.0:
+                # set to pi if not provided
+                self.config.initialization.right_twist_offset = math.pi
+
+        if getattr(self.config.initialization, 'init_at_targets', False):
+            left_hand_model, right_hand_model = initialize_dual_hand_at_targets(
+                right_hand_model, self.object_model, self.config.initialization
+            )
+        else:
+            left_hand_model, right_hand_model = initialize_dual_hand(
+                right_hand_model, self.object_model, self.config.initialization
+            )
         self.bimanual_pair = BimanualPair(left_hand_model, right_hand_model, self.device)
         
         # Save initial poses for optional debugging
@@ -181,6 +207,12 @@ class GraspExperiment:
                 recorder.capture(step=0)
                 recorders.append((k, recorder))
         
+        # Initialize metrics recorder if enabled
+        metrics_recorder = None
+        if getattr(self.config, 'metrics', None) and self.config.metrics.enabled:
+            metrics_dir = os.path.join(results_path, 'metrics')
+            metrics_recorder = SimpleMetricsRecorder(metrics_dir)
+
         # Main optimization loop
         for step in tqdm(range(1, self.config.optimizer.num_iterations + 1), desc='optimizing'):
             # MALA proposal step with Langevin dynamics
@@ -223,6 +255,36 @@ class GraspExperiment:
                         rec.capture(step)
                     except Exception as e:
                         print(f"[WARN] Visualization capture failed at step {step} for recorder {k}: {e}")
+
+            # Metrics recording (batch means)
+            if metrics_recorder is not None and (step % max(1, self.config.metrics.stride) == 0):
+                try:
+                    accept_rate = accept.float().mean().item()
+                    temperature = (self.optimizer.initial_temperature *
+                                   self.optimizer.cooling_schedule ** torch.div(self.optimizer.step, self.optimizer.annealing_period, rounding_mode='floor'))
+                    step_size_cur = (self.optimizer.step_size *
+                                     self.optimizer.cooling_schedule ** torch.div(self.optimizer.step, self.optimizer.step_size_period, rounding_mode='floor'))
+                    # Weighted contributions
+                    w_dis = self.config.energy.w_dis
+                    w_pen = self.config.energy.w_pen
+                    w_spen = self.config.energy.w_spen
+                    w_joints = self.config.energy.w_joints
+                    w_vew = self.config.energy.w_vew
+                    row = {
+                        'step': step,
+                        'total': energy_terms.total.mean().item(),
+                        'w_dis*dis': (w_dis * energy_terms.distance.mean()).item(),
+                        'w_pen*pen': (w_pen * energy_terms.penetration.mean()).item(),
+                        'w_spen*spen': (w_spen * energy_terms.self_penetration.mean()).item(),
+                        'w_joints*joints': (w_joints * energy_terms.joint_limits.mean()).item(),
+                        'w_vew*vew': (w_vew * energy_terms.wrench_volume.mean()).item(),
+                        'accept_rate': accept_rate,
+                        'temperature': float(temperature.detach().cpu().item()) if hasattr(temperature, 'detach') else float(temperature),
+                        'step_size': float(step_size_cur.detach().cpu().item()) if hasattr(step_size_cur, 'detach') else float(step_size_cur),
+                    }
+                    metrics_recorder.log_row(row)
+                except Exception as e:
+                    print(f"[WARN] Metrics recording failed at step {step}: {e}")
         
         self.profiler.disable()
 
@@ -237,6 +299,13 @@ class GraspExperiment:
                     print(f"Saved optimization video to: {video_path}")
                 except Exception as e:
                     print(f"[WARN] Visualization finalize failed for recorder {k}: {e}")
+        # Finalize metrics (write CSV and plot)
+        if metrics_recorder is not None:
+            try:
+                metrics_recorder.finalize()
+                print(f"Saved metrics to: {os.path.join(results_path, 'metrics')}")
+            except Exception as e:
+                print(f"[WARN] Metrics finalize failed: {e}")
         return energy_terms
     
     def save_intermediate_results(self, step: int, energy_terms: EnergyTerms):
@@ -317,11 +386,12 @@ if __name__ == '__main__':
         # 'Breyer_Horse_Of_The_Year_2015',
         # 'Schleich_S_Bayala_Unicorn_70432',
         # '11pro_SL_TRX_FG'
-        'pot_rec'
+        # 'pot_rec',
+        'merged_collision_300k_wt'
     ]
     , type=list, help='List of object codes to process')
     
-    parser.add_argument('--batch_size', default=128, type=int, help='Batch size per object')
+    parser.add_argument('--batch_size', default=1024, type=int, help='Batch size per object')
     parser.add_argument('--num_iterations', default=10000, type=int, help='Number of optimization iterations')
     parser.add_argument('--object_code', default=None, type=str, help='Single object code to override list')
     
@@ -335,6 +405,24 @@ if __name__ == '__main__':
     parser.add_argument('--vis_height', default=900, type=int)
     parser.add_argument('--vis_contacts', action='store_true')
     parser.add_argument('--vis_record_num', default=1, type=int)
+
+    # Target init CLI
+    parser.add_argument('--init_at_targets', action='store_true')
+    parser.add_argument('--left_target', default=None, type=str)
+    parser.add_argument('--right_target', default=None, type=str)
+    parser.add_argument('--target_distance', default=0.22, type=float)
+    parser.add_argument('--target_jitter_dist', default=0.0, type=float)
+    parser.add_argument('--target_jitter_angle', default=0.0, type=float)
+    parser.add_argument('--target_twist_range', default=0.0, type=float)
+    parser.add_argument('--twist_mirror', action='store_true')
+    parser.add_argument('--right_twist_offset', default=0.0, type=float)
+    parser.add_argument('--interact', action='store_true')
+    parser.add_argument('--snap_to_surface', action='store_true')
+    parser.add_argument('--ui_port', default=8050, type=int)
+    
+    # Metrics CLI (minimal)
+    parser.add_argument('--metrics', action='store_true')
+    parser.add_argument('--metrics_stride', default=50, type=int)
     
     
     args = parser.parse_args()

@@ -30,7 +30,7 @@ conda install -c conda-forge transforms3d trimesh plotly rtree -y
 
 # Install pip packages
 echo "Installing pip packages..."
-pip install urdf_parser_py scipy networkx tensorboard six
+pip install urdf_parser_py scipy networkx tensorboard six kaleido "imageio[ffmpeg]"
 
 # Install TorchSDF
 cd thirdparty/TorchSDF
