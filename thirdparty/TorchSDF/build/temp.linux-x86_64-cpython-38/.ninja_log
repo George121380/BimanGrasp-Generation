@@ -1,7 +1,4 @@
-# ninja log v5
-0	4152	1758458461258283300	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance.o	328e7912e819c35b
-0	12472	1758458469573108000	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/bindings.o	46f10a2711131f8b
-0	16623	1758458473726581100	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance_cuda.o	bd70387fbe0e4f93
-5	4014	1758458478160763500	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance.o	ad140f96d64b9a8f
-5	12470	1758458486612372100	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/bindings.o	1301de22917074b5
-5	16717	1758458490861205300	/media/george/Projects/Research/2026-CVPR-BiDexHand/affordance-bidex/third_party/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance_cuda.o	6e2fdebd072cc8e9
+# ninja log v7
+1	6473	1760584167585776308	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance.o	342a67e0adc3de27
+1	20152	1760584167584776295	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/bindings.o	bf0a3854b404c262
+2	21529	1760584167586776321	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance_cuda.o	b32380e660816fb4

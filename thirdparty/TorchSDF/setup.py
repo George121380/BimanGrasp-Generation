@@ -128,12 +128,41 @@ def get_extensions():
         define_macros += [("WITH_CUDA", None), ("THRUST_IGNORE_CUB_VERSION_CHECK", None)]
         sources += glob.glob('torchsdf/csrc/**/*.cu', recursive=True)
         extension = CUDAExtension
-        extra_compile_args.update({'nvcc': [
+        # Force a GCC version supported by CUDA 11.8 and point NVCC to it.
+        # Also add CUDA include paths explicitly to ensure thrust headers are found.
+        nvcc_args = [
             '-O3',
             '-DWITH_CUDA',
-            '-DTHRUST_IGNORE_CUB_VERSION_CHECK'
-        ]})
-        include_dirs = get_include_dirs()
+            '-DTHRUST_IGNORE_CUB_VERSION_CHECK',
+            '-DCCCL_IGNORE_DEPRECATED_CUDA_BELOW_12',
+            # ensure compatible host compiler
+            '-ccbin=/usr/bin/g++-11'
+        ]
+        try:
+            cuda_home = CUDA_HOME
+        except Exception:
+            cuda_home = None
+        if cuda_home:
+            cuda_include_candidates = [
+                os.path.join(cuda_home, 'include'),
+                os.path.join(cuda_home, 'targets', 'x86_64-linux', 'include')
+            ]
+            # Add base include dirs
+            for inc in cuda_include_candidates:
+                if os.path.isdir(inc):
+                    nvcc_args += [f'-I{inc}']
+                    include_dirs.append(inc)
+                    # Add cccl and libcudacxx subdirs if present (for Thrust headers)
+                    cccl_dir = os.path.join(inc, 'cccl')
+                    if os.path.isdir(cccl_dir):
+                        nvcc_args += [f'-I{cccl_dir}']
+                        include_dirs.append(cccl_dir)
+                    libcudacxx_dir = os.path.join(inc, 'libcudacxx')
+                    if os.path.isdir(libcudacxx_dir):
+                        nvcc_args += [f'-I{libcudacxx_dir}']
+                        include_dirs.append(libcudacxx_dir)
+        extra_compile_args.update({'nvcc': nvcc_args})
+        include_dirs += get_include_dirs()
     else:
         extension = CppExtension
         with_cuda = False

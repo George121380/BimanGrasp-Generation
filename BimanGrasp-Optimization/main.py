@@ -391,7 +391,7 @@ if __name__ == '__main__':
     ]
     , type=list, help='List of object codes to process')
     
-    parser.add_argument('--batch_size', default=1024, type=int, help='Batch size per object')
+    parser.add_argument('--batch_size', default=2048, type=int, help='Batch size per object')
     parser.add_argument('--num_iterations', default=10000, type=int, help='Number of optimization iterations')
     parser.add_argument('--object_code', default=None, type=str, help='Single object code to override list')
     
