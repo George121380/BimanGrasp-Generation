@@ -28,6 +28,7 @@ Note:
 
 import argparse
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -122,7 +123,9 @@ def call_main_once(name: str,
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
-    # Respect CUDA_VISIBLE_DEVICES if set from outside
+    # Force per-subprocess GPU isolation so torch sees only the intended GPU.
+    # Passing '--gpu' alone is insufficient if torch was imported before setting env vars.
+    env['CUDA_VISIBLE_DEVICES'] = str(gpu)
     # Run main.py with CWD set to BimanGrasp-Optimization so relative paths
     # like 'mjcf/right_shadow_hand.xml' resolve correctly.
     proc = subprocess.run(cmd, env=env, cwd=os.path.dirname(MAIN_ENTRY))
@@ -142,17 +145,91 @@ def read_round_object_file(results_dir: str, object_code: str) -> List[Dict[str,
     return []
 
 
+def _normalize_for_hash(obj: Any) -> Any:
+    """Normalize nested structures for stable hashing.
+    - Round floats to 6 decimals
+    - Convert numpy scalars
+    - Sort dict keys
+    """
+    try:
+        import numpy as _np  # local alias to avoid shadowing
+    except Exception:
+        _np = None
+    if isinstance(obj, dict):
+        return {k: _normalize_for_hash(obj[k]) for k in sorted(obj.keys())}
+    if isinstance(obj, list):
+        return [_normalize_for_hash(v) for v in obj]
+    if isinstance(obj, float):
+        return round(obj, 6)
+    if _np is not None and isinstance(obj, _np.floating):
+        return round(float(obj), 6)
+    if _np is not None and isinstance(obj, _np.integer):
+        return int(obj)
+    return obj
+
+
+def _item_signature(item: Dict[str, Any]) -> str:
+    """Compute a stable signature for a sample item.
+    Prefer explicit metadata if present; otherwise fall back to content hash.
+    """
+    meta = item.get('__meta__')
+    if isinstance(meta, dict):
+        name = str(meta.get('name', ''))
+        object_code = str(meta.get('object_code', ''))
+        seed = str(meta.get('seed', ''))
+        item_index = str(meta.get('item_index', ''))
+        return f"{name}|{object_code}|{seed}|{item_index}"
+    norm = _normalize_for_hash(item)
+    s = json.dumps(norm, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha1(s.encode('utf-8')).hexdigest()
+
+
 def merge_append(current: Dict[str, Any], new_items: List[Dict[str, Any]], target_count: int) -> Dict[str, Any]:
-    """Append new items to current buffers, truncate to target_count.
-    Structure is a dict of arrays/lists with unified keys.
-    We keep it simple: store flat list of dicts for final.npz in key 'items'.
+    """Append unique items to current buffers, truncate to target_count.
+    Deduplicate by per-item signature to avoid duplicates on resume.
     """
     if current is None:
         current = {'items': []}
-    current['items'].extend(new_items)
+    # Build seen signatures set
+    seen = set(_item_signature(it) for it in current.get('items', []))
+    for it in new_items:
+        sig = _item_signature(it)
+        if sig in seen:
+            continue
+        current['items'].append(it)
+        seen.add(sig)
+        if len(current['items']) >= target_count:
+            break
     if len(current['items']) > target_count:
         current['items'] = current['items'][:target_count]
     return current
+
+
+def _infer_next_round_id(state: Dict[str, Any], collected: int, round_batch_size: int,
+                         seed_base: int, object_index: int) -> int:
+    """Infer a safe next round_id using multiple signals to avoid duplication after crash.
+    Signals: recorded rounds, seeds list, and count-based estimation.
+    """
+    candidates = [int(state.get('rounds', 0) or 0)]
+    seeds = state.get('seeds', []) or []
+    if seeds:
+        candidates.append(len(seeds))
+        base = int(seed_base + object_index * 100_000)
+        derived = []
+        for s in seeds:
+            try:
+                rid = int(s) - base
+                if rid >= 0:
+                    derived.append(rid)
+            except Exception:
+                pass
+        if derived:
+            candidates.append(max(derived) + 1)
+    if round_batch_size and round_batch_size > 0:
+        est = (int(collected) + int(round_batch_size) - 1) // int(round_batch_size)
+        candidates.append(est)
+    # Ensure non-negative integer
+    return max(x for x in candidates if isinstance(x, int) and x >= 0)
 
 
 def write_final_npz(exp_name: str, object_code: str, buf: Dict[str, Any], seed_min: int = None, seed_max: int = None) -> int:
@@ -273,7 +350,7 @@ def orchestrate_single_gpu(args: argparse.Namespace) -> None:
         # Load current final buffer if any
         final_buf = read_final_npz(args.exp_name, object_code)
         collected = len(final_buf['items'])
-        round_id = state.get('rounds', 0)
+        round_id = _infer_next_round_id(state, collected, args.round_batch_size, args.seed_base, object_index)
 
         while collected < args.target_count_per_object and round_id < args.max_rounds:
             name = f"{args.exp_name}__{object_code}__r{round_id}_s{compute_seed(args.seed_base, object_index, round_id)}"
@@ -359,7 +436,8 @@ def orchestrate_multi_gpu(args: argparse.Namespace) -> None:
     inflight_rounds: Dict[str, int] = {}
     for obj in args.object_code_list:
         final_bufs[obj] = read_final_npz(args.exp_name, obj)
-        next_round_id[obj] = objects_state[obj].get('rounds', 0)
+        collected = len(final_bufs[obj]['items'])
+        next_round_id[obj] = _infer_next_round_id(objects_state[obj], collected, args.round_batch_size, args.seed_base, args.object_code_list.index(obj))
         inflight_rounds[obj] = 0
 
     gpu_ids = parse_gpus(args.gpus)
