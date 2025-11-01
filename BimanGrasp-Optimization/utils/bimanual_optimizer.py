@@ -144,6 +144,19 @@ class MALAOptimizer:
         else:
             hand_pose_new = hand_model.hand_pose
         
+        # Project joint angles back into valid limits (hard constraint)
+        try:
+            lower = hand_model.joints_lower
+            upper = hand_model.joints_upper
+            if lower is not None and upper is not None:
+                clamped = torch.max(
+                    torch.min(hand_pose_new[:, 9:], upper.unsqueeze(0)),
+                    lower.unsqueeze(0)
+                )
+                hand_pose_new = torch.cat([hand_pose_new[:, :9], clamped], dim=1)
+        except Exception:
+            pass
+
         # Temperature-adaptive discrete exploration (contact point resampling)
         batch_size, n_contact = hand_model.contact_point_indices.shape
         

@@ -3,7 +3,7 @@ Configuration management for bimanual grasp generation.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 import math
 import os
 
@@ -50,6 +50,83 @@ class PathConfig:
     def get_experiment_results_path(self, exp_name: str) -> str:
         return os.path.join(self.experiments_base, exp_name, 'results')
 
+
+@dataclass
+class HandSpec:
+    """Description of a hand model to load (supports MJCF or URDF)."""
+    model_format: Literal['mjcf', 'urdf'] = 'mjcf'
+    model_path: str = ''
+    mesh_path: str = ''
+    contact_points_path: Optional[str] = None
+    penetration_points_path: Optional[str] = None
+    exclude_links_for_sdf: List[str] = field(default_factory=list)
+    joint_mu: Optional[List[float]] = None  # Optional mean joint angles for init
+    joint_mu_overrides: Dict[str, float] = field(default_factory=dict)  # regex -> bias in [0,1]
+
+    def resolve_paths(self, base_dir: str = '.') -> 'HandSpec':
+        # Optionally resolve relative paths later if needed
+        return self
+
+    @staticmethod
+    def preset_shadow(side: Literal['left', 'right']) -> 'HandSpec':
+        if side == 'left':
+            return HandSpec(
+                model_format='mjcf',
+                model_path='mjcf/left_shadow_hand.xml',
+                mesh_path='mjcf/meshes',
+                contact_points_path='mjcf/left_hand_contact_points.json',
+                penetration_points_path='mjcf/penetration_points.json',
+                # Keep legacy exclusions for ShadowHand analytics speed
+                exclude_links_for_sdf=[
+                    'robot0:forearm', 'robot0:wrist_child', 'robot0:ffknuckle_child',
+                    'robot0:mfknuckle_child', 'robot0:rfknuckle_child', 'robot0:lfknuckle_child',
+                    'robot0:thbase_child', 'robot0:thhub_child'
+                ]
+            )
+        else:
+            return HandSpec(
+                model_format='mjcf',
+                model_path='mjcf/right_shadow_hand.xml',
+                mesh_path='mjcf/meshes',
+                contact_points_path='mjcf/right_hand_contact_points.json',
+                penetration_points_path='mjcf/penetration_points.json',
+                exclude_links_for_sdf=[
+                    'robot0:forearm', 'robot0:wrist_child', 'robot0:ffknuckle_child',
+                    'robot0:mfknuckle_child', 'robot0:rfknuckle_child', 'robot0:lfknuckle_child',
+                    'robot0:thbase_child', 'robot0:thhub_child'
+                ]
+            )
+
+    @staticmethod
+    def preset_psi_oy(side: Literal['left', 'right']) -> 'HandSpec':
+        if side == 'left':
+            return HandSpec(
+                model_format='urdf',
+                model_path='psi-oy/InspireHand_OY_Left/InspireHand_OY_Left.urdf',
+                mesh_path='psi-oy/InspireHand_OY_Left/meshes',
+                contact_points_path=None,
+                penetration_points_path=None,
+                exclude_links_for_sdf=[],
+                joint_mu_overrides={
+                    r'^hand1_joint_link_[1-5]_1$': 0.02,
+                    r'^hand1_joint_link_[1-5]_2$': 0.02,
+                    r'^hand1_joint_link_[1-5]_3$': 0.02,
+                }
+            )
+        else:
+            return HandSpec(
+                model_format='urdf',
+                model_path='psi-oy/InspireHand_OY_Right/InspireHand_OY_Right.urdf',
+                mesh_path='psi-oy/InspireHand_OY_Right/meshes',
+                contact_points_path=None,
+                penetration_points_path=None,
+                exclude_links_for_sdf=[],
+                joint_mu_overrides={
+                    r'^hand2_joint_link_[1-5]_1$': 0.02,
+                    r'^hand2_joint_link_[1-5]_2$': 0.02,
+                    r'^hand2_joint_link_[1-5]_3$': 0.02,
+                }
+            )
 
 @dataclass
 class EnergyConfig:
@@ -130,6 +207,11 @@ class InitializationConfig:
     
     # Joint initialization
     jitter_strength: float = 0.1         # Joint angle randomization strength
+    # Joint init bias: mu = lower + bias*(upper-lower); set small to open hand
+    joint_mu_bias: float = 0.05
+    joint_mu_mode: str = 'bias'           # 'bias' | 'mid' | 'zero'
+    joint_mu_overrides_left: Dict[str, float] = field(default_factory=dict)
+    joint_mu_overrides_right: Dict[str, float] = field(default_factory=dict)
     
     # Contact points
     num_contacts: int = 4                # Number of contact points per hand
@@ -217,6 +299,9 @@ class ExperimentConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     vis: VisConfig = field(default_factory=VisConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    # Hand specs
+    left_hand: HandSpec = field(default_factory=lambda: HandSpec.preset_shadow('left'))
+    right_hand: HandSpec = field(default_factory=lambda: HandSpec.preset_shadow('right'))
     
     # Derived properties
     @property
@@ -253,7 +338,7 @@ class ExperimentConfig:
                 
         # Update initialization parameters
         init_attrs = ['distance_lower', 'distance_upper', 'theta_lower', 'theta_upper', 
-                     'jitter_strength', 'num_contacts', 'init_at_targets', 'left_target',
+                     'jitter_strength', 'joint_mu_bias', 'joint_mu_mode', 'num_contacts', 'init_at_targets', 'left_target',
                      'right_target', 'target_distance', 'target_jitter_dist', 'target_jitter_angle',
                      'target_twist_range', 'twist_mirror', 'right_twist_offset', 'interact', 'snap_to_surface', 'ui_port']
         for attr in init_attrs:
@@ -287,6 +372,37 @@ class ExperimentConfig:
         for cli_name, field_name in vis_map.items():
             if hasattr(args, cli_name):
                 setattr(self.vis, field_name, getattr(args, cli_name))
+
+        # Hand selection (simple presets)
+        # Global hand selector overrides both sides unless side-specific provided
+        hand_choice = getattr(args, 'hand', None) if hasattr(args, 'hand') else None
+        left_choice = getattr(args, 'left_hand', None) if hasattr(args, 'left_hand') else None
+        right_choice = getattr(args, 'right_hand', None) if hasattr(args, 'right_hand') else None
+
+        def apply_choice(choice: Optional[str], side: str):
+            if choice is None:
+                return
+            choice_l = str(choice).lower()
+            if choice_l in ['shadow', 'shadowhand', 'mjcf']:
+                spec = HandSpec.preset_shadow('left' if side == 'left' else 'right')
+            elif choice_l in ['psi_oy', 'psi-oy', 'psioy', 'urdf']:
+                spec = HandSpec.preset_psi_oy('left' if side == 'left' else 'right')
+            else:
+                # Unknown keyword, ignore
+                return
+            if side == 'left':
+                self.left_hand = spec
+            else:
+                self.right_hand = spec
+
+        # Apply global first, then side-specific to override
+        if hand_choice is not None:
+            apply_choice(hand_choice, 'left')
+            apply_choice(hand_choice, 'right')
+        if left_choice is not None:
+            apply_choice(left_choice, 'left')
+        if right_choice is not None:
+            apply_choice(right_choice, 'right')
 
         # Metrics CLI mapping
         if hasattr(args, 'metrics'):

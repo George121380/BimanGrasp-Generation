@@ -12,7 +12,7 @@ from torchsdf import index_vertices_by_faces, compute_sdf
 
 
 class HandModel:
-    def __init__(self, mjcf_path, mesh_path, contact_points_path, penetration_points_path, n_surface_points=0, device='cpu', handedness=None):
+    def __init__(self, mjcf_path=None, mesh_path=None, contact_points_path=None, penetration_points_path=None, n_surface_points=0, device='cpu', handedness=None, urdf_path=None, exclude_links_for_sdf=None):
           
         """
         Create a Hand Model for a MJCF robot
@@ -44,10 +44,17 @@ class HandModel:
 
         self.device = device
         self.handedness = handedness
+        self.exclude_links_for_sdf = exclude_links_for_sdf or []
         
         # load articulation
-        
-        self.chain = pk.build_chain_from_mjcf(open(mjcf_path).read()).to(dtype=torch.float, device=device)
+        if urdf_path is not None:
+            self.chain = pk.build_chain_from_urdf(open(urdf_path, 'rb').read()).to(dtype=torch.float, device=device)
+            self._model_format = 'urdf'
+            self._model_path = urdf_path
+        else:
+            self.chain = pk.build_chain_from_mjcf(open(mjcf_path).read()).to(dtype=torch.float, device=device)
+            self._model_format = 'mjcf'
+            self._model_path = mjcf_path
         self.n_dofs = len(self.chain.get_joint_parameter_names())
         
         # load contact points and penetration points
@@ -75,9 +82,34 @@ class HandModel:
                     elif visual.geom_type == "capsule":
                         link_mesh = tm.primitives.Capsule(radius=visual.geom_param[0], height=visual.geom_param[1] * 2).apply_translation((0, 0, -visual.geom_param[1]))
                     elif visual.geom_type == "mesh":
-                        link_mesh = tm.load_mesh(os.path.join(mesh_path, visual.geom_param[0].split(":")[1]+".obj"), process=False)
-                        if visual.geom_param[1] is not None:
-                            scale = torch.tensor(visual.geom_param[1], dtype=torch.float, device=device)
+                        # Support both MJCF and URDF param styles
+                        gparam = visual.geom_param
+                        mesh_file = None
+                        if isinstance(gparam, (list, tuple)):
+                            try:
+                                mesh_stub = str(gparam[0])
+                                if ":" in mesh_stub:
+                                    mesh_stub = mesh_stub.split(":")[1]
+                                mesh_file = mesh_stub + ".obj"
+                            except Exception:
+                                mesh_file = str(gparam[0])
+                            if len(gparam) > 1 and gparam[1] is not None:
+                                try:
+                                    scale = torch.tensor(gparam[1], dtype=torch.float, device=device)
+                                except Exception:
+                                    pass
+                        elif isinstance(gparam, str):
+                            mesh_file = gparam
+                        if mesh_file is None:
+                            link_mesh = tm.Trimesh(vertices=[[0,0,0]], faces=[[0,0,0]], process=False)
+                        else:
+                            mesh_file = mesh_file.replace('package://', '').replace('file://', '')
+                            if mesh_file.startswith('/'):
+                                mesh_abs = mesh_file
+                            else:
+                                # Prefer joining with filename to avoid duplicated 'meshes/meshes' when URDF uses 'meshes/..'
+                                mesh_abs = os.path.join(mesh_path, os.path.basename(mesh_file))
+                            link_mesh = tm.load_mesh(mesh_abs, process=False)
                     vertices = torch.tensor(link_mesh.vertices, dtype=torch.float, device=device)
                     faces = torch.tensor(link_mesh.faces, dtype=torch.long, device=device)
                     pos = visual.offset.to(self.device)
@@ -88,19 +120,20 @@ class HandModel:
                     n_link_vertices += len(vertices)
                 link_vertices = torch.cat(link_vertices, dim=0)
                 link_faces = torch.cat(link_faces, dim=0)
-                contact_candidates = torch.tensor(contact_points[link_name], dtype=torch.float32, device=device).reshape(-1, 3) if contact_points is not None else None
-                penetration_keypoints = torch.tensor(penetration_points[link_name], dtype=torch.float32, device=device).reshape(-1, 3) if penetration_points is not None else None
+                contact_candidates = torch.tensor(contact_points[link_name], dtype=torch.float32, device=device).reshape(-1, 3) if (contact_points is not None and link_name in contact_points) else None
+                penetration_keypoints = torch.tensor(penetration_points[link_name], dtype=torch.float32, device=device).reshape(-1, 3) if (penetration_points is not None and link_name in penetration_points) else None
                 self.mesh[link_name] = {
                     'vertices': link_vertices,
                     'faces': link_faces,
                     'contact_candidates': contact_candidates,
                     'penetration_keypoints': penetration_keypoints,
                 }
-                if link_name in ['robot0:palm', 'robot0:palm_child', 'robot0:lfmetacarpal_child']:
+                primary_visual = body.link.visuals[0]
+                if primary_visual.geom_type in ['mesh', 'box']:
                     link_face_verts = index_vertices_by_faces(link_vertices, link_faces)
                     self.mesh[link_name]['face_verts'] = link_face_verts
-                else:
-                    self.mesh[link_name]['geom_param'] = body.link.visuals[0].geom_param
+                elif primary_visual.geom_type == 'capsule':
+                    self.mesh[link_name]['geom_param'] = primary_visual.geom_param
                 areas[link_name] = tm.Trimesh(link_vertices.cpu().numpy(), link_faces.cpu().numpy()).area.item()
             for children in body.children:
                 build_mesh_recurse(children)
@@ -115,8 +148,12 @@ class HandModel:
         def set_joint_range_recurse(body):
             if body.joint.joint_type != "fixed":
                 self.joints_names.append(body.joint.name)
-                self.joints_lower.append(body.joint.range[0])
-                self.joints_upper.append(body.joint.range[1])
+                if body.joint.range is None:
+                    self.joints_lower.append(torch.tensor(-3.14159265))
+                    self.joints_upper.append(torch.tensor(3.14159265))
+                else:
+                    self.joints_lower.append(body.joint.range[0])
+                    self.joints_upper.append(body.joint.range[1])
             for children in body.children:
                 set_joint_range_recurse(children)
         set_joint_range_recurse(self.chain._root)
@@ -125,9 +162,13 @@ class HandModel:
             self.joints_lower = torch.stack(self.joints_lower).float().to(device)
             self.joints_upper = torch.stack(self.joints_upper).float().to(device)
         elif self.handedness == 'left_hand':
-            k = self.joints_lower
-            self.joints_lower = -torch.stack(self.joints_upper).float().to(device)
-            self.joints_upper = -torch.stack(k).float().to(device)        
+            if urdf_path is not None:
+                self.joints_lower = torch.stack(self.joints_lower).float().to(device)
+                self.joints_upper = torch.stack(self.joints_upper).float().to(device)
+            else:
+                k = self.joints_lower
+                self.joints_lower = -torch.stack(self.joints_upper).float().to(device)
+                self.joints_upper = -torch.stack(k).float().to(device)        
         else:
             raise Exception("You have to declare the handedness of your hand model")
         # sample surface points
@@ -144,6 +185,18 @@ class HandModel:
             surface_points = pytorch3d.ops.sample_farthest_points(dense_point_cloud, K=num_samples[link_name])[0][0]
             surface_points.to(dtype=float, device=device)
             self.mesh[link_name]['surface_points'] = surface_points
+
+        # Fallback autogeneration for missing contact/penetration keypoints
+        for link_name in self.mesh:
+            if self.mesh[link_name]['contact_candidates'] is None:
+                self.mesh[link_name]['contact_candidates'] = self.mesh[link_name]['surface_points']
+            if self.mesh[link_name]['penetration_keypoints'] is None:
+                sp = self.mesh[link_name]['surface_points']
+                if sp.shape[0] == 0:
+                    self.mesh[link_name]['penetration_keypoints'] = torch.tensor([], dtype=torch.float, device=device).reshape(0, 3)
+                else:
+                    kpen = min(64, sp.shape[0])
+                    self.mesh[link_name]['penetration_keypoints'] = sp[:kpen]
 
         # indexing
 
@@ -232,25 +285,20 @@ class HandModel:
         # Note that we use a chamfer box instead of a primitive box to get more accurate signs
         dis = []
         x = (x - self.global_translation.unsqueeze(1)) @ self.global_rotation
-        
-        x = x.cuda()
+        x = x.to(self.device)
         
         for link_name in self.mesh:
-            if link_name in ['robot0:forearm', 'robot0:wrist_child', 'robot0:ffknuckle_child', 'robot0:mfknuckle_child', 'robot0:rfknuckle_child', 'robot0:lfknuckle_child', 'robot0:thbase_child', 'robot0:thhub_child']:
+            if self.exclude_links_for_sdf and (link_name in self.exclude_links_for_sdf):
                 continue
             matrix = self.current_status[link_name].get_matrix()
-            
-            matrix = matrix.cuda()
+            matrix = matrix.to(self.device)
             
             x_local = (x - matrix[:, :3, 3].unsqueeze(1)) @ matrix[:, :3, :3]
             x_local = x_local.reshape(-1, 3)  # (total_batch_size * num_samples, 3)
             if 'geom_param' not in self.mesh[link_name]:
                 face_verts = self.mesh[link_name]['face_verts']
-                
-                x_local = x_local.cuda()  # Ensure x_local is a CUDA tensor
-                face_verts = face_verts.cuda()  # Ensure face_verts is a CUDA tensor                
-                            
-                
+                x_local = x_local.to(self.device)
+                face_verts = face_verts.to(self.device)
                 dis_local, dis_signs, _, _ = compute_sdf(x_local, face_verts)
                 dis_local = torch.sqrt(dis_local + 1e-8)
                 dis_local = dis_local * (-dis_signs)

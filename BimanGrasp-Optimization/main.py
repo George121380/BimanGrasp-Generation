@@ -70,15 +70,30 @@ class GraspExperiment:
         """Initialize hand and object models."""
         print("Setting up models...")
         
-        # Create right hand model
+        # Create hand models from config specs
+        rh_spec = self.config.right_hand
+        lh_spec = self.config.left_hand
         right_hand_model = HandModel(
-            mjcf_path=self.config.paths.right_hand_mjcf,
-            mesh_path=self.config.paths.mesh_path,
-            contact_points_path=self.config.paths.right_contact_points,
-            penetration_points_path=self.config.paths.penetration_points,
+            mjcf_path=rh_spec.model_path if rh_spec.model_format == 'mjcf' else None,
+            urdf_path=rh_spec.model_path if rh_spec.model_format == 'urdf' else None,
+            mesh_path=rh_spec.mesh_path,
+            contact_points_path=rh_spec.contact_points_path,
+            penetration_points_path=rh_spec.penetration_points_path,
             device=self.device,
             n_surface_points=self.config.model.n_surface_points,
-            handedness='right_hand'
+            handedness='right_hand',
+            exclude_links_for_sdf=rh_spec.exclude_links_for_sdf if hasattr(rh_spec, 'exclude_links_for_sdf') else None
+        )
+        left_hand_model = HandModel(
+            mjcf_path=lh_spec.model_path if lh_spec.model_format == 'mjcf' else None,
+            urdf_path=lh_spec.model_path if lh_spec.model_format == 'urdf' else None,
+            mesh_path=lh_spec.mesh_path,
+            contact_points_path=lh_spec.contact_points_path,
+            penetration_points_path=lh_spec.penetration_points_path,
+            device=self.device,
+            n_surface_points=self.config.model.n_surface_points,
+            handedness='left_hand',
+            exclude_links_for_sdf=lh_spec.exclude_links_for_sdf if hasattr(lh_spec, 'exclude_links_for_sdf') else None
         )
         
         # Create object model
@@ -110,13 +125,17 @@ class GraspExperiment:
                 # set to pi if not provided
                 self.config.initialization.right_twist_offset = math.pi
 
+        # Propagate per-joint init overrides from hand specs
+        self.config.initialization.joint_mu_overrides_left = getattr(lh_spec, 'joint_mu_overrides', {})
+        self.config.initialization.joint_mu_overrides_right = getattr(rh_spec, 'joint_mu_overrides', {})
+
         if getattr(self.config.initialization, 'init_at_targets', False):
             left_hand_model, right_hand_model = initialize_dual_hand_at_targets(
-                right_hand_model, self.object_model, self.config.initialization
+                left_hand_model, right_hand_model, self.object_model, self.config.initialization
             )
         else:
             left_hand_model, right_hand_model = initialize_dual_hand(
-                right_hand_model, self.object_model, self.config.initialization
+                left_hand_model, right_hand_model, self.object_model, self.config.initialization
             )
         self.bimanual_pair = BimanualPair(left_hand_model, right_hand_model, self.device)
         
@@ -377,6 +396,11 @@ if __name__ == '__main__':
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu', default="0", type=str)
     
+    # Hand selection (shadow | psi_oy)
+    parser.add_argument('--hand', default=None, type=str, help='Quick hand preset for both hands: shadow | psi_oy')
+    parser.add_argument('--left_hand', default=None, type=str, help='Left hand preset override')
+    parser.add_argument('--right_hand', default=None, type=str, help='Right hand preset override')
+    
     # Object and batch configuration
     parser.add_argument('--object_code_list', default=
     [
@@ -419,6 +443,9 @@ if __name__ == '__main__':
     parser.add_argument('--interact', action='store_true')
     parser.add_argument('--snap_to_surface', action='store_true')
     parser.add_argument('--ui_port', default=8050, type=int)
+    parser.add_argument('--joint_mu_bias', default=None, type=float, help='Joint init bias in [0,1]: mu=lower + bias*(upper-lower)')
+    parser.add_argument('--jitter_strength', default=None, type=float, help='Joint angle randomization strength (override)')
+    parser.add_argument('--joint_mu_mode', default=None, type=str, help="Joint init mode: 'bias' | 'mid' | 'zero'")
     
     # Metrics CLI (minimal)
     parser.add_argument('--metrics', action='store_true')
