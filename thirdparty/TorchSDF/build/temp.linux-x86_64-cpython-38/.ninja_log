@@ -1,4 +1,4 @@
 # ninja log v7
-1	6473	1760584167585776308	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance.o	342a67e0adc3de27
-1	20152	1760584167584776295	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/bindings.o	bf0a3854b404c262
-2	21529	1760584167586776321	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance_cuda.o	b32380e660816fb4
+2	4488	1761751670627227818	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance.o	df9ce32f5bd44e0b
+1	13452	1761751670626227806	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/bindings.o	6f21e09fa920b010
+2	14195	1761751670627227818	/home/peiqi621/projects/BimanGrasp-Generation/thirdparty/TorchSDF/build/temp.linux-x86_64-cpython-38/torchsdf/csrc/unbatched_triangle_distance_cuda.o	1e35815b09499b52

@@ -350,7 +350,8 @@ def create_grasp_data(idx: int, object_model, left_hand_model, right_hand_model,
 def save_grasp_results(result_path: str, object_code_list: List[str], batch_size: int,
                       object_model, bimanual_pair: BimanualPair,
                       left_hand_pose_st: torch.Tensor, right_hand_pose_st: torch.Tensor,
-                      energy_terms: EnergyTerms, step: Optional[int] = None) -> None:
+                      energy_terms: EnergyTerms, step: Optional[int] = None,
+                      extra_meta: Optional[Dict[str, Any]] = None) -> None:
     """
     Save grasp results in standardized format.
     
@@ -372,7 +373,19 @@ def save_grasp_results(result_path: str, object_code_list: List[str], batch_size
                 idx, object_model, bimanual_pair.left, bimanual_pair.right,
                 left_hand_pose_st, right_hand_pose_st, energy_terms
             )
-            data_list.append(grasp_data.to_dict())
+            item = grasp_data.to_dict()
+            # Attach metadata for robust resume/dedup.
+            meta = {
+                'object_code': object_code,
+                'item_index': j,
+            }
+            if step is not None:
+                meta['step'] = step
+            if extra_meta:
+                # Shallow merge; keys in extra_meta override defaults if conflict.
+                meta.update(extra_meta)
+            item['__meta__'] = meta
+            data_list.append(item)
         
         # Create filename
         filename = object_code

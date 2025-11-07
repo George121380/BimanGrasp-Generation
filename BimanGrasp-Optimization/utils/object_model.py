@@ -14,6 +14,25 @@ import plotly.graph_objects as go
 from torchsdf import index_vertices_by_faces, compute_sdf
 
 
+def _mesh_relpaths_from_env() -> list:
+    env_val = os.environ.get('BIMANGRASP_MESH_PATTERN')
+    if env_val:
+        rels = [p for p in env_val.split(os.pathsep) if p]
+        if rels:
+            return rels
+    return [
+        os.path.join('coacd', 'decomposed.obj'),
+        'decomposed.obj',
+        os.path.join('models', 'model.obj'),
+        os.path.join('models', 'model_normalized.obj'),
+        os.path.join('meshes', 'mesh.obj'),
+        os.path.join('mesh', 'textured.obj'),
+        'textured.obj',
+        'model.obj',
+        'mesh.obj',
+    ]
+
+
 class ObjectModel:
     """
     Object model for mesh loading, scaling, and distance computation.
@@ -83,9 +102,40 @@ class ObjectModel:
             scale_indices = torch.randint(0, self.scale_choice.shape[0], (self.batch_size_each,), device=self.device)
             self.object_scale_tensor.append(self.scale_choice[scale_indices])
             
-            # Load object mesh
-            mesh_path = os.path.join(self.data_root_path, object_code, "coacd", "decomposed.obj")
-            mesh = tm.load(mesh_path, force="mesh", process=False)
+            # Load object mesh (try multiple common patterns and env override)
+            selected_path = None
+            tried_paths = []
+            rels = _mesh_relpaths_from_env()
+            code_str = str(object_code)
+            # 1) Direct under root
+            for rel in rels:
+                candidate = os.path.join(self.data_root_path, code_str, rel)
+                tried_paths.append(candidate)
+                if os.path.isfile(candidate):
+                    selected_path = candidate
+                    break
+            # 2) One category level under root
+            if selected_path is None:
+                try:
+                    for entry in os.listdir(self.data_root_path):
+                        cat_dir = os.path.join(self.data_root_path, entry)
+                        if not os.path.isdir(cat_dir):
+                            continue
+                        for rel in rels:
+                            candidate = os.path.join(cat_dir, code_str, rel)
+                            tried_paths.append(candidate)
+                            if os.path.isfile(candidate):
+                                selected_path = candidate
+                                break
+                        if selected_path is not None:
+                            break
+                except Exception:
+                    pass
+            if selected_path is None:
+                raise FileNotFoundError(
+                    f"No mesh found for object '{object_code}'. Tried: " + ", ".join(tried_paths)
+                )
+            mesh = tm.load(selected_path, force="mesh", process=False)
             self.object_mesh_list.append(mesh)
             
             # Prepare mesh data for SDF computation

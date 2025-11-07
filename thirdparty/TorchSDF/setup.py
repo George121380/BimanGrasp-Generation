@@ -12,6 +12,7 @@ import importlib
 from pkg_resources import parse_version
 import subprocess
 import warnings
+import shutil
 
 TORCH_MIN_VER = '1.5.0'
 TORCH_MAX_VER = '1.12.1'
@@ -135,9 +136,36 @@ def get_extensions():
             '-DWITH_CUDA',
             '-DTHRUST_IGNORE_CUB_VERSION_CHECK',
             '-DCCCL_IGNORE_DEPRECATED_CUDA_BELOW_12',
-            # ensure compatible host compiler
-            '-ccbin=/usr/bin/g++-11'
         ]
+        # Select a compatible host compiler for NVCC
+        def find_host_compiler():
+            # Highest priority: explicit env vars
+            for env_var in ('CUDAHOSTCXX', 'CXX'):
+                cxx_path = os.environ.get(env_var)
+                if cxx_path and os.path.exists(cxx_path):
+                    return cxx_path
+            # Try conda-provided compilers first, then system ones
+            candidates = [
+                'x86_64-conda-linux-gnu-g++',  # conda-forge compilers
+                'g++-11',
+                'g++-10',
+                'g++'
+            ]
+            for candidate in candidates:
+                resolved = shutil.which(candidate)
+                if resolved:
+                    return resolved
+            return None
+
+        host_cxx = find_host_compiler()
+        if host_cxx is not None:
+            nvcc_args += [f'-ccbin={host_cxx}']
+        else:
+            logger.warning(
+                'No compatible host compiler explicitly found for NVCC; '
+                'falling back to NVCC default host compiler. '
+                'You can set CUDAHOSTCXX to override.'
+            )
         try:
             cuda_home = CUDA_HOME
         except Exception:
