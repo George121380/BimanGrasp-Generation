@@ -291,40 +291,75 @@ class BimanualEnergyComputer:
         # Compute non-grasp-matrix energies
         energy_dis = self.contact_distance_computer.compute(bimanual_pair, object_model)
         energy_pen = self.penetration_computer.compute_object_penetration(bimanual_pair, object_model)
-        energy_spen = self.penetration_computer.compute_self_penetration(bimanual_pair)
+        # In uni2bim mode, exclude inter-hand penetration by computing per-hand self-penetration only
+        if getattr(self.config, 'use_uni2bim', False):
+            left_spen, right_spen = bimanual_pair.apply_to_both(lambda h: h.self_penetration())
+            energy_spen = left_spen + right_spen
+        else:
+            energy_spen = self.penetration_computer.compute_self_penetration(bimanual_pair)
         energy_joints = bimanual_pair.compute_joint_limits_energy()
         
-        # Compute FC and VEW together for efficiency (both need grasp matrix)
-        if (bimanual_pair.left.contact_points is not None and 
-            bimanual_pair.right.contact_points is not None):
-            # Get contact information
-            _, contact_normal_left = object_model.cal_distance(bimanual_pair.left.contact_points)
-            _, contact_normal_right = object_model.cal_distance(bimanual_pair.right.contact_points)
+        # Compute FC and VEW
+        if getattr(self.config, 'use_uni2bim', False):
+            # In uni2bim mode, compute FC independently for each hand and sum; disable VEW
+            # Left hand FC
+            if bimanual_pair.left.contact_points is not None:
+                _, contact_normal_left = object_model.cal_distance(bimanual_pair.left.contact_points)
+                contact_normal_left = contact_normal_left / (torch.norm(contact_normal_left, dim=-1, keepdim=True) + 1e-8)
+                n_contact_left = bimanual_pair.left.contact_points.shape[1]
+                G_left = self.grasp_matrix_computer.build_grasp_matrix(
+                    bimanual_pair.left.contact_points, contact_normal_left, batch_size, n_contact_left
+                )
+                energy_fc_left, _ = self.grasp_matrix_computer.compute_fc_and_vew(G_left)
+            else:
+                energy_fc_left = torch.zeros(batch_size, device=self.device)
             
-            # Build grasp matrix once
-            all_contact_points = torch.cat([
-                bimanual_pair.left.contact_points, 
-                bimanual_pair.right.contact_points
-            ], dim=1)
-            all_contact_normals = torch.cat([contact_normal_left, contact_normal_right], dim=1)
-            all_contact_normals = all_contact_normals / (
-                torch.norm(all_contact_normals, dim=-1, keepdim=True) + 1e-8
-            )
+            # Right hand FC
+            if bimanual_pair.right.contact_points is not None:
+                _, contact_normal_right = object_model.cal_distance(bimanual_pair.right.contact_points)
+                contact_normal_right = contact_normal_right / (torch.norm(contact_normal_right, dim=-1, keepdim=True) + 1e-8)
+                n_contact_right = bimanual_pair.right.contact_points.shape[1]
+                G_right = self.grasp_matrix_computer.build_grasp_matrix(
+                    bimanual_pair.right.contact_points, contact_normal_right, batch_size, n_contact_right
+                )
+                energy_fc_right, _ = self.grasp_matrix_computer.compute_fc_and_vew(G_right)
+            else:
+                energy_fc_right = torch.zeros(batch_size, device=self.device)
             
-            n_total_contacts = bimanual_pair.total_contacts
-            G = self.grasp_matrix_computer.build_grasp_matrix(
-                all_contact_points, all_contact_normals, batch_size, n_total_contacts
-            )
-            
-            # Compute both FC and VEW from single SVD
-            energy_fc, energy_vew = self.grasp_matrix_computer.compute_fc_and_vew(G)
-            
-            # Apply VEW weight (only include if enabled)
-            if self.config.w_vew <= 0:
-                energy_vew = torch.zeros(batch_size, device=self.device)
-        else:
-            energy_fc = torch.ones(batch_size, device=self.device)
+            energy_fc = energy_fc_left + energy_fc_right
             energy_vew = torch.zeros(batch_size, device=self.device)
+        else:
+            # Default mode: compute FC & VEW using combined contacts (original behavior)
+            if (bimanual_pair.left.contact_points is not None and 
+                bimanual_pair.right.contact_points is not None):
+                # Get contact information
+                _, contact_normal_left = object_model.cal_distance(bimanual_pair.left.contact_points)
+                _, contact_normal_right = object_model.cal_distance(bimanual_pair.right.contact_points)
+                
+                # Build grasp matrix once
+                all_contact_points = torch.cat([
+                    bimanual_pair.left.contact_points, 
+                    bimanual_pair.right.contact_points
+                ], dim=1)
+                all_contact_normals = torch.cat([contact_normal_left, contact_normal_right], dim=1)
+                all_contact_normals = all_contact_normals / (
+                    torch.norm(all_contact_normals, dim=-1, keepdim=True) + 1e-8
+                )
+                
+                n_total_contacts = bimanual_pair.total_contacts
+                G = self.grasp_matrix_computer.build_grasp_matrix(
+                    all_contact_points, all_contact_normals, batch_size, n_total_contacts
+                )
+                
+                # Compute both FC and VEW from single SVD
+                energy_fc, energy_vew = self.grasp_matrix_computer.compute_fc_and_vew(G)
+                
+                # Apply VEW weight (only include if enabled)
+                if self.config.w_vew <= 0:
+                    energy_vew = torch.zeros(batch_size, device=self.device)
+            else:
+                energy_fc = torch.ones(batch_size, device=self.device)
+                energy_vew = torch.zeros(batch_size, device=self.device)
         
         # Compute total weighted energy
         energy_total = (energy_fc + 

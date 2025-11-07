@@ -395,6 +395,8 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='test', type=str, help='Experiment name')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu', default="0", type=str)
+    # Mode: default | uni2bim (uni2bim decouples left/right optimization)
+    parser.add_argument('--mode', default='default', choices=['default', 'uni2bim'], type=str)
     
     # Hand selection (shadow | psi_oy)
     parser.add_argument('--hand', default=None, type=str, help='Quick hand preset for both hands: shadow | psi_oy')

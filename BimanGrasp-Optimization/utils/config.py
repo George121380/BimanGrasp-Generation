@@ -139,6 +139,9 @@ class EnergyConfig:
     w_joints: float = 1.0        # Joint limit weight
     w_vew: float = 0.5           # Wrench ellipse volume weight
     
+    # Mode switch: when True, enable uni2bim behavior (per-hand independent optimization)
+    use_uni2bim: bool = False
+    
     # Energy thresholds for filtering
     thres_fc: float = 0.45        # Force closure threshold
     thres_dis: float = 0.005     # Distance threshold
@@ -336,14 +339,16 @@ class ExperimentConfig:
             if hasattr(args, attr):
                 setattr(self.optimizer, attr, getattr(args, attr))
                 
-        # Update initialization parameters
+        # Update initialization parameters (only override when CLI provides a non-None value)
         init_attrs = ['distance_lower', 'distance_upper', 'theta_lower', 'theta_upper', 
                      'jitter_strength', 'joint_mu_bias', 'joint_mu_mode', 'num_contacts', 'init_at_targets', 'left_target',
                      'right_target', 'target_distance', 'target_jitter_dist', 'target_jitter_angle',
                      'target_twist_range', 'twist_mirror', 'right_twist_offset', 'interact', 'snap_to_surface', 'ui_port']
         for attr in init_attrs:
             if hasattr(args, attr):
-                setattr(self.initialization, attr, getattr(args, attr))
+                val = getattr(args, attr)
+                if val is not None:
+                    setattr(self.initialization, attr, val)
                 
         # Update model parameters
         model_attrs = ['batch_size', 'batch_size_each', 'max_total_batch_size']
@@ -356,6 +361,15 @@ class ExperimentConfig:
         for attr in thresh_attrs:
             if hasattr(args, attr):
                 setattr(self.energy, attr, getattr(args, attr))
+
+        # Mode switch mapping (default behavior unchanged unless explicitly set)
+        if hasattr(args, 'mode'):
+            mode_val = getattr(args, 'mode')
+            if isinstance(mode_val, str) and mode_val.lower() == 'uni2bim':
+                self.energy.use_uni2bim = True
+            else:
+                # Keep default False for any other value (including 'default')
+                self.energy.use_uni2bim = False
 
         # Update visualization parameters (if provided)
         vis_map = {

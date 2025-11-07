@@ -299,14 +299,84 @@ def truncated_normal_init(tensor: torch.Tensor, mean: float = 0.0, std: float = 
         Initialized tensor
     """
     with torch.no_grad():
-        # Use torch.nn.init.trunc_normal_ if available, otherwise approximate
-        if hasattr(torch.nn.init, 'trunc_normal_'):
-            torch.nn.init.trunc_normal_(tensor, mean, std, mean + a * std, mean + b * std)
+        # Prefer a GPU-only implementation to avoid NVRTC/erfinv issues
+        if tensor.is_cuda:
+            truncated_normal_gpu_(tensor, mean, std, mean + a * std, mean + b * std)
         else:
-            # Fallback: normal initialization with clipping
-            torch.nn.init.normal_(tensor, mean, std)
-            tensor.clamp_(mean + a * std, mean + b * std)
+            # Use torch.nn.init.trunc_normal_ when available on CPU
+            if hasattr(torch.nn.init, 'trunc_normal_'):
+                torch.nn.init.trunc_normal_(tensor, mean, std, mean + a * std, mean + b * std)
+            else:
+                # Fallback: normal initialization with clipping
+                torch.nn.init.normal_(tensor, mean, std)
+                tensor.clamp_(mean + a * std, mean + b * std)
     
+    return tensor
+
+
+def truncated_normal_gpu_(tensor: torch.Tensor,
+                          mean: float = 0.0,
+                          std: float = 1.0,
+                          a: float = -2.0,
+                          b: float = 2.0,
+                          max_rounds: int = 8,
+                          oversample: int = 2) -> torch.Tensor:
+    """
+    GPU-only truncated normal initializer using vectorized rejection sampling.
+    This avoids NVRTC JIT (erfinv) so it works even when NVRTC arch flags mismatch.
+
+    Args:
+        tensor: Target tensor (must be CUDA tensor for GPU-only path)
+        mean: Mean of the normal distribution
+        std: Standard deviation (must be > 0)
+        a: Absolute lower bound in output units
+        b: Absolute upper bound in output units
+        max_rounds: Max rejection rounds before clamped fallback
+        oversample: Oversampling factor per round
+
+    Returns:
+        The initialized tensor (same object as input)
+    """
+    if not tensor.is_cuda:
+        raise ValueError("truncated_normal_gpu_ requires a CUDA tensor")
+    if std <= 0:
+        raise ValueError("std must be positive")
+
+    with torch.no_grad():
+        device = tensor.device
+        dtype = tensor.dtype
+
+        # Standardize bounds
+        mean_t = torch.as_tensor(mean, device=device, dtype=dtype)
+        std_t = torch.as_tensor(std, device=device, dtype=dtype)
+        a_t = torch.as_tensor(a, device=device, dtype=dtype)
+        b_t = torch.as_tensor(b, device=device, dtype=dtype)
+        lower = (a_t - mean_t) / std_t
+        upper = (b_t - mean_t) / std_t
+
+        flat = tensor.view(-1)
+        total = flat.numel()
+        filled = 0
+        rounds = 0
+
+        while filled < total and rounds < max_rounds:
+            remaining = total - filled
+            # Oversample to improve acceptance probability
+            candidates = torch.randn(remaining * oversample, device=device, dtype=dtype)
+            accept = candidates[(candidates >= lower) & (candidates <= upper)]
+            take = min(accept.numel(), remaining)
+            if take > 0:
+                flat[filled:filled + take] = accept[:take] * std_t + mean_t
+                filled += take
+            rounds += 1
+
+        if filled < total:
+            # Fallback: clamp a fresh normal draw to the bounds (slight bias)
+            rest = total - filled
+            tail = torch.randn(rest, device=device, dtype=dtype)
+            tail.clamp_(min=lower.item(), max=upper.item())
+            flat[filled:] = tail * std_t + mean_t
+
     return tensor
 
 
