@@ -1,0 +1,19 @@
+# experiments and generated artifacts
+data/experiments/
+data/graspdata/
+**/frames_*/
+**/*.mp4
+
+# python/torch build outputs and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.build/
+
+# binaries and native extensions
+**/*.so
+
+# notebooks and misc
+*.ipynb_checkpoints

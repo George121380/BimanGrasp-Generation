@@ -265,7 +265,7 @@ class BimanualPair:
         return left_contacts + right_contacts
 
 
-def hand_pose_to_dict(hand_pose: torch.Tensor, hand_model=None) -> Dict[str, float]:
+def hand_pose_to_dict(hand_pose: torch.Tensor) -> Dict[str, float]:
     """
     Convert hand pose tensor to dictionary format.
     Unified function to replace multiple duplicated implementations.
@@ -277,20 +277,9 @@ def hand_pose_to_dict(hand_pose: torch.Tensor, hand_model=None) -> Dict[str, flo
         Dictionary with joint names and values
     """
     hand_pose_cpu = hand_pose.detach().cpu()
-    # Optionally clamp joint angles to limits for saving
-    if hand_model is not None and hasattr(hand_model, 'joints_lower') and hasattr(hand_model, 'joints_upper'):
-        lower = hand_model.joints_lower.detach().cpu()
-        upper = hand_model.joints_upper.detach().cpu()
-        hp = hand_pose_cpu.clone()
-        hp[9:] = torch.max(torch.min(hp[9:], upper), lower)
-        hand_pose_cpu = hp
     
     # Joint angles (elements 9 onwards)
-    if hand_model is not None and hasattr(hand_model, 'joints_names'):
-        joint_names = hand_model.joints_names
-    else:
-        joint_names = JOINT_NAMES
-    qpos = dict(zip(joint_names, hand_pose_cpu[9:].tolist()))
+    qpos = dict(zip(JOINT_NAMES, hand_pose_cpu[9:].tolist()))
     
     # Rotation (elements 3-9, convert from 6D rotation to Euler angles)
     rot_6d = hand_pose_cpu[3:9].unsqueeze(0)
@@ -327,10 +316,10 @@ def create_grasp_data(idx: int, object_model, left_hand_model, right_hand_model,
     scale = object_model.object_scale_tensor[batch_idx][sample_idx].item()
     
     # Convert poses to dictionaries
-    qpos_left = hand_pose_to_dict(left_hand_model.hand_pose[idx], left_hand_model)
-    qpos_left_st = hand_pose_to_dict(left_hand_pose_st[idx], left_hand_model)
-    qpos_right = hand_pose_to_dict(right_hand_model.hand_pose[idx], right_hand_model)
-    qpos_right_st = hand_pose_to_dict(right_hand_pose_st[idx], right_hand_model)
+    qpos_left = hand_pose_to_dict(left_hand_model.hand_pose[idx])
+    qpos_left_st = hand_pose_to_dict(left_hand_pose_st[idx])
+    qpos_right = hand_pose_to_dict(right_hand_model.hand_pose[idx])
+    qpos_right_st = hand_pose_to_dict(right_hand_pose_st[idx])
     
     return GraspData(
         scale=scale,

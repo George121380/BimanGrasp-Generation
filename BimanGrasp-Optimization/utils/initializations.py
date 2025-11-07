@@ -12,7 +12,6 @@ import pytorch3d.structures
 import pytorch3d.ops
 
 from utils.hand_model import HandModel
-import re
 from utils.common import normalize_tensor
 
 def initialize_convex_hull(left_hand_model, object_model, args):
@@ -93,29 +92,17 @@ def initialize_convex_hull(left_hand_model, object_model, args):
         )
         rotation[start_idx:end_idx] = world_rot @ cone_rot @ (-hand_rot)
     
-    # Initialize joint angles using truncated normal distribution (generic for any DOF)
-    mode = str(getattr(args, 'joint_mu_mode', 'bias') or 'bias').lower()
-    bias = float(getattr(args, 'joint_mu_bias', 0.05)) if hasattr(args, 'joint_mu_bias') and getattr(args, 'joint_mu_bias') is not None else 0.05
-    if mode == 'zero':
-        base_mu = torch.clamp(torch.zeros_like(left_hand_model.joints_lower), min=left_hand_model.joints_lower, max=left_hand_model.joints_upper)
-    elif mode == 'mid':
-        base_mu = 0.5 * (left_hand_model.joints_lower + left_hand_model.joints_upper)
-    else:  # 'bias'
-        base_mu = left_hand_model.joints_lower + bias * (left_hand_model.joints_upper - left_hand_model.joints_lower)
-    # Apply per-joint overrides for left
-    overrides = getattr(args, 'joint_mu_overrides_left', {}) or {}
-    joint_mu = base_mu.clone()
-    for idx, name in enumerate(left_hand_model.joints_names):
-        for pat, b in overrides.items():
-            if re.match(pat, name):
-                jb = float(b)
-                joint_mu[idx] = left_hand_model.joints_lower[idx] + jb * (left_hand_model.joints_upper[idx] - left_hand_model.joints_lower[idx])
-                break
-    joint_sigma = args.jitter_strength * (left_hand_model.joints_upper - left_hand_model.joints_lower)
+    # Initialize joint angles using truncated normal distribution  
+    # joint_angles_mu: hand-crafted canonicalized hand articulation
+    joint_angles_mu = torch.tensor([
+        0.1, 0, -0.6, 0, 0, 0, -0.6, 0, -0.1, 0, -0.6, 0,
+        0, -0.2, 0, -0.6, 0, 0, -1.2, 0, -0.2, 0
+    ], dtype=torch.float, device=device)
+    joint_angles_sigma = args.jitter_strength * (left_hand_model.joints_upper - left_hand_model.joints_lower)
     joint_angles = torch.zeros([total_batch_size, left_hand_model.n_dofs], dtype=torch.float, device=device)
     for i in range(left_hand_model.n_dofs):
         torch.nn.init.trunc_normal_(
-            joint_angles[:, i], joint_mu[i], joint_sigma[i],
+            joint_angles[:, i], joint_angles_mu[i], joint_angles_sigma[i],
             left_hand_model.joints_lower[i] - 1e-6, left_hand_model.joints_upper[i] + 1e-6
         )
 
@@ -137,7 +124,7 @@ def initialize_convex_hull(left_hand_model, object_model, args):
     return n, p
 
 
-def initialize_dual_hand(left_hand_model, right_hand_model, object_model, args):
+def initialize_dual_hand(right_hand_model, object_model, args):
     """
     Initialize both hands' positions and rotations to grasp an object symmetrically.
     
@@ -154,6 +141,16 @@ def initialize_dual_hand(left_hand_model, right_hand_model, object_model, args):
     n_objects = len(object_model.object_mesh_list)
     batch_per_obj = object_model.batch_size_each
     total_batch_size = n_objects * batch_per_obj    
+    
+    # Create left hand model
+    left_hand_model = HandModel(
+        mjcf_path='mjcf/left_shadow_hand.xml',
+        mesh_path='mjcf/meshes',
+        contact_points_path='mjcf/left_hand_contact_points.json',
+        penetration_points_path='mjcf/penetration_points.json',
+        device=device,
+        handedness='left_hand'
+    )
     
     n, p = initialize_convex_hull(left_hand_model, object_model, args)
 
@@ -204,28 +201,16 @@ def initialize_dual_hand(left_hand_model, right_hand_model, object_model, args):
         rotation_right[start_idx:end_idx] = world_rot @ cone_rot @ hand_rot
 
 
-    # Initialize right hand joint angles (generic)
-    mode = str(getattr(args, 'joint_mu_mode', 'bias') or 'bias').lower()
-    bias = float(getattr(args, 'joint_mu_bias', 0.05)) if hasattr(args, 'joint_mu_bias') and getattr(args, 'joint_mu_bias') is not None else 0.05
-    if mode == 'zero':
-        base_mu_R = torch.clamp(torch.zeros_like(right_hand_model.joints_lower), min=right_hand_model.joints_lower, max=right_hand_model.joints_upper)
-    elif mode == 'mid':
-        base_mu_R = 0.5 * (right_hand_model.joints_lower + right_hand_model.joints_upper)
-    else:
-        base_mu_R = right_hand_model.joints_lower + bias * (right_hand_model.joints_upper - right_hand_model.joints_lower)
-    overrides_R = getattr(args, 'joint_mu_overrides_right', {}) or {}
-    joint_mu_R = base_mu_R.clone()
-    for idx, name in enumerate(right_hand_model.joints_names):
-        for pat, b in overrides_R.items():
-            if re.match(pat, name):
-                jb = float(b)
-                joint_mu_R[idx] = right_hand_model.joints_lower[idx] + jb * (right_hand_model.joints_upper[idx] - right_hand_model.joints_lower[idx])
-                break
-    joint_sigma_R = args.jitter_strength * (right_hand_model.joints_upper - right_hand_model.joints_lower)
+    # Initialize right hand joint angles
+    joint_angles_mu = torch.tensor([
+        0.1, 0, 0.6, 0, 0, 0, 0.6, 0, -0.1, 0, 0.6, 0,
+        0, -0.2, 0, 0.6, 0, 0, 1.2, 0, -0.2, 0
+    ], dtype=torch.float, device=device)
+    joint_angles_sigma = args.jitter_strength * (right_hand_model.joints_upper - right_hand_model.joints_lower)
     joint_angles = torch.zeros([total_batch_size, right_hand_model.n_dofs], dtype=torch.float, device=device)
     for i in range(right_hand_model.n_dofs):
         torch.nn.init.trunc_normal_(
-            joint_angles[:, i], joint_mu_R[i], joint_sigma_R[i],
+            joint_angles[:, i], joint_angles_mu[i], joint_angles_sigma[i],
             right_hand_model.joints_lower[i] - 1e-6, right_hand_model.joints_upper[i] + 1e-6
         )
 
@@ -275,7 +260,7 @@ def _rotation_align_z_to_dir(direction: torch.Tensor, device):
     return R
 
 
-def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_model, args):
+def initialize_dual_hand_at_targets(right_hand_model, object_model, args):
     """
     Initialize both hands near specified target points on the object surface.
     Left near A, right near B, palms facing toward the targets.
@@ -284,6 +269,16 @@ def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_mo
     n_objects = len(object_model.object_mesh_list)
     batch_per_obj = object_model.batch_size_each
     total_batch_size = n_objects * batch_per_obj
+
+    # Left hand model (create anew like original)
+    left_hand_model = HandModel(
+        mjcf_path='mjcf/left_shadow_hand.xml',
+        mesh_path='mjcf/meshes',
+        contact_points_path='mjcf/left_hand_contact_points.json',
+        penetration_points_path='mjcf/penetration_points.json',
+        device=device,
+        handedness='left_hand'
+    )
 
     # Parse targets (object coords)
     A_obj = _parse_target_vec3(getattr(args, 'left_target', None), device)
@@ -394,28 +389,16 @@ def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_mo
             rotation_L[idx] = world_rot_A @ (-hand_rot)
             rotation_R[idx] = world_rot_B @ hand_rot
 
-    # Initialize joint angles (generic) for left hand
-    mode = str(getattr(args, 'joint_mu_mode', 'bias') or 'bias').lower()
-    bias = float(getattr(args, 'joint_mu_bias', 0.05)) if hasattr(args, 'joint_mu_bias') and getattr(args, 'joint_mu_bias') is not None else 0.05
-    if mode == 'zero':
-        base_mu_L = torch.clamp(torch.zeros_like(left_hand_model.joints_lower), min=left_hand_model.joints_lower, max=left_hand_model.joints_upper)
-    elif mode == 'mid':
-        base_mu_L = 0.5 * (left_hand_model.joints_lower + left_hand_model.joints_upper)
-    else:
-        base_mu_L = left_hand_model.joints_lower + bias * (left_hand_model.joints_upper - left_hand_model.joints_lower)
-    overrides_L = getattr(args, 'joint_mu_overrides_left', {}) or {}
-    mu_L = base_mu_L.clone()
-    for idx, name in enumerate(left_hand_model.joints_names):
-        for pat, b in overrides_L.items():
-            if re.match(pat, name):
-                jb = float(b)
-                mu_L[idx] = left_hand_model.joints_lower[idx] + jb * (left_hand_model.joints_upper[idx] - left_hand_model.joints_lower[idx])
-                break
+    # Initialize joint angles (same as original)
+    joint_angles_mu_L = torch.tensor([
+        0.1, 0, -0.6, 0, 0, 0, -0.6, 0, -0.1, 0, -0.6, 0,
+        0, -0.2, 0, -0.6, 0, 0, -1.2, 0, -0.2, 0
+    ], dtype=torch.float, device=device)
     sigma_L = args.jitter_strength * (left_hand_model.joints_upper - left_hand_model.joints_lower)
     joints_L = torch.zeros([total_batch_size, left_hand_model.n_dofs], dtype=torch.float, device=device)
     for k in range(left_hand_model.n_dofs):
         torch.nn.init.trunc_normal_(
-            joints_L[:, k], mu_L[k], sigma_L[k],
+            joints_L[:, k], joint_angles_mu_L[k], sigma_L[k],
             left_hand_model.joints_lower[k] - 1e-6, left_hand_model.joints_upper[k] + 1e-6
         )
 
@@ -430,27 +413,16 @@ def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_mo
     contact_indices_L = torch.randint(left_hand_model.n_contact_candidates, size=[total_batch_size, n_contact], device=device)
     left_hand_model.set_parameters(hand_pose_L, contact_indices_L)
 
-    # Right hand joints (generic)
-    overrides_R = getattr(args, 'joint_mu_overrides_right', {}) or {}
-    base_mu_R = None
-    if mode == 'zero':
-        base_mu_R = torch.clamp(torch.zeros_like(right_hand_model.joints_lower), min=right_hand_model.joints_lower, max=right_hand_model.joints_upper)
-    elif mode == 'mid':
-        base_mu_R = 0.5 * (right_hand_model.joints_lower + right_hand_model.joints_upper)
-    else:
-        base_mu_R = right_hand_model.joints_lower + bias * (right_hand_model.joints_upper - right_hand_model.joints_lower)
-    mu_R = base_mu_R.clone()
-    for idx, name in enumerate(right_hand_model.joints_names):
-        for pat, b in overrides_R.items():
-            if re.match(pat, name):
-                jb = float(b)
-                mu_R[idx] = right_hand_model.joints_lower[idx] + jb * (right_hand_model.joints_upper[idx] - right_hand_model.joints_lower[idx])
-                break
+    # Right hand joints
     sigma_R = args.jitter_strength * (right_hand_model.joints_upper - right_hand_model.joints_lower)
+    joint_angles_mu_R = torch.tensor([
+        0.1, 0, 0.6, 0, 0, 0, 0.6, 0, -0.1, 0, 0.6, 0,
+        0, -0.2, 0, 0.6, 0, 0, 1.2, 0, -0.2, 0
+    ], dtype=torch.float, device=device)
     joints_R = torch.zeros([total_batch_size, right_hand_model.n_dofs], dtype=torch.float, device=device)
     for k in range(right_hand_model.n_dofs):
         torch.nn.init.trunc_normal_(
-            joints_R[:, k], mu_R[k], joints_R[:, k].new_full((), sigma_R[k]),
+            joints_R[:, k], joint_angles_mu_R[k], joints_R[:, k].new_full((), sigma_R[k]),
             right_hand_model.joints_lower[k] - 1e-6, right_hand_model.joints_upper[k] + 1e-6
         )
 
