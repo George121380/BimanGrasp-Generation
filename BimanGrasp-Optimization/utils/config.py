@@ -241,6 +241,7 @@ class ModelConfig:
     
     # Hand model parameters
     n_surface_points: int = 2000         # Number of surface points for sampling
+    object_scale_multiplier: float = 1.0 # Global multiplier applied to object scale
     
     # Object model parameters  
     num_samples: int = 2000              # Number of object surface samples
@@ -284,6 +285,7 @@ class ExperimentConfig:
     name: str = 'exp_2025'               # Experiment name
     seed: int = 1                        # Random seed
     gpu: str = "0"                       # GPU device ID
+    vis_init: bool = False               # Reduce initial hand distance for visualization
     
     # Object selection
     object_code_list: List[str] = field(default_factory=lambda: [
@@ -321,6 +323,8 @@ class ExperimentConfig:
         for attr in ['name', 'seed', 'gpu']:
             if hasattr(args, attr):
                 setattr(self, attr, getattr(args, attr))
+        if hasattr(args, 'vis_init'):
+            self.vis_init = bool(getattr(args, 'vis_init'))
         
         # Update object list
         if hasattr(args, 'object_code_list'):
@@ -351,7 +355,7 @@ class ExperimentConfig:
                     setattr(self.initialization, attr, val)
                 
         # Update model parameters
-        model_attrs = ['batch_size', 'batch_size_each', 'max_total_batch_size']
+        model_attrs = ['batch_size', 'batch_size_each', 'max_total_batch_size', 'object_scale_multiplier']
         for attr in model_attrs:
             if hasattr(args, attr):
                 setattr(self.model, attr, getattr(args, attr))

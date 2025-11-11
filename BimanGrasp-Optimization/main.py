@@ -18,6 +18,7 @@ import random
 import transforms3d
 import math
 import shutil
+import copy
 from utils.hand_model import HandModel
 from utils.object_model import ObjectModel
 from utils.initializations import initialize_dual_hand, initialize_dual_hand_at_targets
@@ -105,6 +106,11 @@ class GraspExperiment:
             size=self.config.model.size
         )
         self.object_model.initialize(self.config.object_code_list)
+        # Apply global object scale multiplier (must be positive)
+        scale_mul = float(getattr(self.config.model, 'object_scale_multiplier', 1.0))
+        if scale_mul <= 0:
+            raise ValueError("object_scale_multiplier must be positive.")
+        self.object_model.object_scale_tensor = self.object_model.object_scale_tensor * scale_mul
         
         # Initialize dual hands (support target-based init & interactive selection)
         if getattr(self.config.initialization, 'interact', False):
@@ -129,13 +135,23 @@ class GraspExperiment:
         self.config.initialization.joint_mu_overrides_left = getattr(lh_spec, 'joint_mu_overrides', {})
         self.config.initialization.joint_mu_overrides_right = getattr(rh_spec, 'joint_mu_overrides', {})
 
-        if getattr(self.config.initialization, 'init_at_targets', False):
+        init_args = self.config.initialization
+        if getattr(self.config, 'vis_init', False):
+            init_args = copy.deepcopy(self.config.initialization)
+            init_args.distance_lower *= 0.8
+            init_args.distance_upper *= 0.8
+            if hasattr(init_args, 'target_distance') and init_args.target_distance is not None:
+                init_args.target_distance *= 0.8
+            if hasattr(init_args, 'target_jitter_dist') and init_args.target_jitter_dist is not None:
+                init_args.target_jitter_dist *= 0.8
+
+        if getattr(init_args, 'init_at_targets', False):
             left_hand_model, right_hand_model = initialize_dual_hand_at_targets(
-                left_hand_model, right_hand_model, self.object_model, self.config.initialization
+                left_hand_model, right_hand_model, self.object_model, init_args
             )
         else:
             left_hand_model, right_hand_model = initialize_dual_hand(
-                left_hand_model, right_hand_model, self.object_model, self.config.initialization
+                left_hand_model, right_hand_model, self.object_model, init_args
             )
         self.bimanual_pair = BimanualPair(left_hand_model, right_hand_model, self.device)
         
@@ -268,7 +284,8 @@ class GraspExperiment:
                 )
 
             # Visualization capture per stride
-            if recorders and (step % max(1, self.config.vis.frame_stride) == 0):
+            capture_every_step = bool(getattr(self.config, 'vis_init', False))
+            if recorders and (capture_every_step or (step % max(1, self.config.vis.frame_stride) == 0)):
                 for k, rec in recorders:
                     try:
                         rec.capture(step)
@@ -395,6 +412,7 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='test', type=str, help='Experiment name')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu', default="0", type=str)
+    parser.add_argument('--vis_init', action='store_true', help='Reduce initial hand-object distance for visualization')
     # Mode: default | uni2bim (uni2bim decouples left/right optimization)
     parser.add_argument('--mode', default='default', choices=['default', 'uni2bim'], type=str)
     
@@ -413,7 +431,7 @@ if __name__ == '__main__':
         # 'Schleich_S_Bayala_Unicorn_70432',
         # '11pro_SL_TRX_FG'
         # 'pot_rec',
-        'merged_collision_300k_wt'
+        '100015'
     ]
     , type=list, help='List of object codes to process')
     
@@ -427,6 +445,7 @@ if __name__ == '__main__':
     parser.add_argument('--vis_obj', default=0, type=int)
     parser.add_argument('--vis_local', default=0, type=int)
     parser.add_argument('--vis_fps', default=30, type=int)
+    parser.add_argument('--object_scale_multiplier', default=1.0, type=float, help='Global multiplier applied to object scale')
     parser.add_argument('--vis_width', default=900, type=int)
     parser.add_argument('--vis_height', default=900, type=int)
     parser.add_argument('--vis_contacts', action='store_true')

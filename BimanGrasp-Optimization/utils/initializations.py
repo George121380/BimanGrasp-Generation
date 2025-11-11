@@ -13,7 +13,7 @@ import pytorch3d.ops
 
 from utils.hand_model import HandModel
 import re
-from utils.common import normalize_tensor
+from utils.common import normalize_tensor, safe_trunc_normal_
 
 def initialize_convex_hull(left_hand_model, object_model, args):
     """
@@ -114,10 +114,11 @@ def initialize_convex_hull(left_hand_model, object_model, args):
     joint_sigma = args.jitter_strength * (left_hand_model.joints_upper - left_hand_model.joints_lower)
     joint_angles = torch.zeros([total_batch_size, left_hand_model.n_dofs], dtype=torch.float, device=device)
     for i in range(left_hand_model.n_dofs):
-        torch.nn.init.trunc_normal_(
-            joint_angles[:, i], joint_mu[i], joint_sigma[i],
-            left_hand_model.joints_lower[i] - 1e-6, left_hand_model.joints_upper[i] + 1e-6
-        )
+        mu_i = float(joint_mu[i].item()) if isinstance(joint_mu[i], torch.Tensor) else float(joint_mu[i])
+        sigma_i = float(joint_sigma[i].item()) if isinstance(joint_sigma[i], torch.Tensor) else float(joint_sigma[i])
+        low_i = float((left_hand_model.joints_lower[i] - 1e-6).item()) if isinstance(left_hand_model.joints_lower[i], torch.Tensor) else float(left_hand_model.joints_lower[i] - 1e-6)
+        up_i = float((left_hand_model.joints_upper[i] + 1e-6).item()) if isinstance(left_hand_model.joints_upper[i], torch.Tensor) else float(left_hand_model.joints_upper[i] + 1e-6)
+        safe_trunc_normal_(joint_angles[:, i], mu_i, sigma_i, low_i, up_i)
 
     hand_pose = torch.cat([
         translation,
@@ -224,10 +225,11 @@ def initialize_dual_hand(left_hand_model, right_hand_model, object_model, args):
     joint_sigma_R = args.jitter_strength * (right_hand_model.joints_upper - right_hand_model.joints_lower)
     joint_angles = torch.zeros([total_batch_size, right_hand_model.n_dofs], dtype=torch.float, device=device)
     for i in range(right_hand_model.n_dofs):
-        torch.nn.init.trunc_normal_(
-            joint_angles[:, i], joint_mu_R[i], joint_sigma_R[i],
-            right_hand_model.joints_lower[i] - 1e-6, right_hand_model.joints_upper[i] + 1e-6
-        )
+        mu_i = float(joint_mu_R[i].item()) if isinstance(joint_mu_R[i], torch.Tensor) else float(joint_mu_R[i])
+        sigma_i = float(joint_sigma_R[i].item()) if isinstance(joint_sigma_R[i], torch.Tensor) else float(joint_sigma_R[i])
+        low_i = float((right_hand_model.joints_lower[i] - 1e-6).item()) if isinstance(right_hand_model.joints_lower[i], torch.Tensor) else float(right_hand_model.joints_lower[i] - 1e-6)
+        up_i = float((right_hand_model.joints_upper[i] + 1e-6).item()) if isinstance(right_hand_model.joints_upper[i], torch.Tensor) else float(right_hand_model.joints_upper[i] + 1e-6)
+        safe_trunc_normal_(joint_angles[:, i], mu_i, sigma_i, low_i, up_i)
 
     # Assemble right hand pose
     hand_pose_right = torch.cat([
@@ -414,10 +416,11 @@ def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_mo
     sigma_L = args.jitter_strength * (left_hand_model.joints_upper - left_hand_model.joints_lower)
     joints_L = torch.zeros([total_batch_size, left_hand_model.n_dofs], dtype=torch.float, device=device)
     for k in range(left_hand_model.n_dofs):
-        torch.nn.init.trunc_normal_(
-            joints_L[:, k], mu_L[k], sigma_L[k],
-            left_hand_model.joints_lower[k] - 1e-6, left_hand_model.joints_upper[k] + 1e-6
-        )
+        mu_k = float(mu_L[k].item()) if isinstance(mu_L[k], torch.Tensor) else float(mu_L[k])
+        sigma_k = float(sigma_L[k].item()) if isinstance(sigma_L[k], torch.Tensor) else float(sigma_L[k])
+        low_k = float((left_hand_model.joints_lower[k] - 1e-6).item()) if isinstance(left_hand_model.joints_lower[k], torch.Tensor) else float(left_hand_model.joints_lower[k] - 1e-6)
+        up_k = float((left_hand_model.joints_upper[k] + 1e-6).item()) if isinstance(left_hand_model.joints_upper[k], torch.Tensor) else float(left_hand_model.joints_upper[k] + 1e-6)
+        safe_trunc_normal_(joints_L[:, k], mu_k, sigma_k, low_k, up_k)
 
     hand_pose_L = torch.cat([
         translation_L,
@@ -449,10 +452,11 @@ def initialize_dual_hand_at_targets(left_hand_model, right_hand_model, object_mo
     sigma_R = args.jitter_strength * (right_hand_model.joints_upper - right_hand_model.joints_lower)
     joints_R = torch.zeros([total_batch_size, right_hand_model.n_dofs], dtype=torch.float, device=device)
     for k in range(right_hand_model.n_dofs):
-        torch.nn.init.trunc_normal_(
-            joints_R[:, k], mu_R[k], joints_R[:, k].new_full((), sigma_R[k]),
-            right_hand_model.joints_lower[k] - 1e-6, right_hand_model.joints_upper[k] + 1e-6
-        )
+        mu_k = float(mu_R[k].item()) if isinstance(mu_R[k], torch.Tensor) else float(mu_R[k])
+        sigma_k = float(sigma_R[k].item()) if isinstance(sigma_R[k], torch.Tensor) else float(sigma_R[k])
+        low_k = float((right_hand_model.joints_lower[k] - 1e-6).item()) if isinstance(right_hand_model.joints_lower[k], torch.Tensor) else float(right_hand_model.joints_lower[k] - 1e-6)
+        up_k = float((right_hand_model.joints_upper[k] + 1e-6).item()) if isinstance(right_hand_model.joints_upper[k], torch.Tensor) else float(right_hand_model.joints_upper[k] + 1e-6)
+        safe_trunc_normal_(joints_R[:, k], mu_k, sigma_k, low_k, up_k)
 
     hand_pose_R = torch.cat([
         translation_R,

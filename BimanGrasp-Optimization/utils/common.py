@@ -380,6 +380,34 @@ def truncated_normal_gpu_(tensor: torch.Tensor,
     return tensor
 
 
+def safe_trunc_normal_(tensor: torch.Tensor,
+                       mean: float,
+                       std: float,
+                       a: float,
+                       b: float) -> torch.Tensor:
+    """Device-safe truncated normal initializer with absolute bounds.
+
+    This avoids NVRTC/Jiterator (erfinv_) on CUDA devices by using a GPU-only
+    rejection sampling path and falls back to torch.nn.init.trunc_normal_ on CPU.
+
+    Args:
+        tensor: Target tensor to initialize (in-place)
+        mean: Mean of the normal distribution
+        std: Standard deviation (> 0)
+        a: Absolute lower bound in output units
+        b: Absolute upper bound in output units
+
+    Returns:
+        The initialized tensor (same object as input)
+    """
+    with torch.no_grad():
+        if tensor.is_cuda:
+            truncated_normal_gpu_(tensor, float(mean), float(std), float(a), float(b))
+        else:
+            torch.nn.init.trunc_normal_(tensor, float(mean), float(std), float(a), float(b))
+    return tensor
+
+
 def create_batch_mask(batch_size: int, indices: torch.Tensor, device: torch.device = None) -> torch.Tensor:
     """
     Create boolean mask from indices.
